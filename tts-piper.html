@@ -35,7 +35,7 @@
   <script>
     (function(){
       var BRAND = '#00FFA3';
-      var ONLY_VOICE = { id: 'me:fr', label: 'FR — Classique (WAV local garanti)' };
+      var VOICE = { id: 'fr', label: 'FR — Classique (WAV local)'};
 
       function $(root, sel){ return root.querySelector(sel); }
       function setTxt(el, t){ if(el) el.textContent = t; }
@@ -81,7 +81,6 @@
           .step{font-weight:700; color:#fff}\
           .step em{color:'+BRAND+'; font-style:normal}\
           audio{width:100%; margin-top:6px}\
-          progress{width:100%; height:10px; border-radius:10px; overflow:hidden}\
         </style>\
         <div class=\'card\'>\
           <div class=\'header\'>\
@@ -100,7 +99,7 @@
               <div class=\'controls\'>\
                 <button class=\'btn\' id=\'preview\'>▶️ Écouter</button>\
               </div>\
-              <div class=\'foot\'>100% dans le navigateur. Aucun quota, aucun serveur.</div>\
+              <div class=\'foot\'>100% navigateur. Aucun quota, aucun serveur.</div>\
             </div>\
             <div class=\'fieldset\'>\
               <label for=\'text\'>Texte</label>\
@@ -109,7 +108,7 @@
               <div class=\'sliders\'>\
                 <div class=\'slider-row\'>\
                   <label for=\'rate\'>Vitesse (sortie): <span id=\'rateVal\'>1.00×</span></label>\
-                  <input id=\'rate\' type=\'range\' min=\'0.7\' max=\'1.4\' value=\'1\' step=\'0.05\' />\
+                  <input id=\'rate\' type=\'range\' min=\'0.7\' max=\'1.4\' value=\'1\' step=\'0.05' />\
                 </div>\
               </div>\
               <div class=\'controls\'>\
@@ -137,8 +136,8 @@
         this.$diag = document.getElementById('diag');
 
         // state
-        this.storeKey = 'tts_mespeak_widget_v1';
-        this.state = { voiceId: ONLY_VOICE.id, rate:1, text:'' };
+        this.storeKey = 'tts_mespeak_widget_v2';
+        this.state = { voiceId: VOICE.id, rate:1, text:'' };
         this._meReady = false;
       };
 
@@ -155,42 +154,41 @@
 
       TTSWidget.prototype._onReady = async function(){
         this._load();
-        // peupler la liste (une voix garantie)
+        // UI de base
         this.$voice.innerHTML='';
-        var opt=document.createElement('option'); opt.value=ONLY_VOICE.id; opt.textContent=ONLY_VOICE.label; this.$voice.appendChild(opt);
-        this.$voice.value = this.state.voiceId || ONLY_VOICE.id;
+        var opt=document.createElement('option'); opt.value=VOICE.id; opt.textContent=VOICE.label; this.$voice.appendChild(opt);
+        this.$voice.value = this.state.voiceId || VOICE.id;
         this.state.voiceId = this.$voice.value; this._save();
         setTxt(this.$rateVal, (this.state.rate||1).toFixed(2)+'×');
         if(this.state.text) this.$text.value = this.state.text;
         this._autoresize(); this._updateCount(); this._updateModelInfo();
 
-        // charger la voix FR meSpeak
-        await this.ensureMeSpeak();
-        if(this._meReady){ this._setStatus('Prêt'); }
-      };
-
-      // ------- meSpeak loader -------
-      TTSWidget.prototype.ensureMeSpeak = async function(){
-        if(this._meReady) return true;
+        // Charger config + voix meSpeak (important !)
         try{
+          await new Promise(function(resolve, reject){
+            window.meSpeak.loadConfig('https://cdn.jsdelivr.net/npm/mespeak/mespeak_config.json', function(ok){ ok? resolve(): reject(new Error('config load')); });
+          });
           await new Promise(function(resolve, reject){
             window.meSpeak.loadVoice('https://cdn.jsdelivr.net/npm/mespeak/voices/fr.json', function(ok){ ok? resolve(): reject(new Error('voice load')); });
           });
-          this._meReady = true; return true;
-        }catch(e){ this.diag('❌ meSpeak voice FR: '+(e&&e.message?e.message:e)); this._setStatus('Voix FR indisponible.'); return false; }
+          this._meReady = true; this._setStatus('Prêt');
+        }catch(e){ this._meReady=false; this._setStatus('Voix FR indisponible.'); this.diag('❌ meSpeak init: '+(e&&e.message?e.message:e)); }
       };
 
-      // ------- UI helpers -------
+      // helpers
+      TTSWidget.prototype._load = function(){ try{ var s=JSON.parse(localStorage.getItem(this.storeKey)||'{}'); for(var k in s){ this.state[k]=s[k]; } }catch{} };
+      TTSWidget.prototype._save = function(){ try{ localStorage.setItem(this.storeKey, JSON.stringify(this.state)); }catch{} };
       TTSWidget.prototype._updateCount = function(){ var n=(this.$text.value||'').length; setTxt(this.$count, n+(n>1?' caractères':' caractère')); };
       TTSWidget.prototype._autoresize = function(){ var el=this.$text; el.style.height='auto'; var max=420; el.style.height=Math.min(el.scrollHeight+2, max)+'px'; };
       TTSWidget.prototype._setStatus = function(s){ setTxt(this.$status,s); };
       TTSWidget.prototype._updateModelInfo = function(){ setTxt(this.$modelInfo, 'Source: meSpeak (WAV local)'); };
       TTSWidget.prototype.diag = function(line){ var d=document.getElementById('diag'); if(d){ d.insertAdjacentHTML('beforeend','<div>'+line+'</div>'); } };
 
-      // ---- Lecture (pré-écoute) ----
+      // Lecture (pré-écoute)
       TTSWidget.prototype.handlePreview = async function(){
         var text=(this.$text.value||'').trim() || 'Bonjour, ceci est un test.';
-        if(!await this.ensureMeSpeak()){ this._setStatus('Lecture indisponible.'); return; }
+        if(!this._meReady){ this._setStatus('Chargement de la voix…'); await this._onReady(); }
+        if(!this._meReady){ this._setStatus('Lecture indisponible.'); return; }
         try{
           this._setStatus('Génération pour écoute…');
           var wav = await this.meSpeakWav(text);
@@ -200,23 +198,23 @@
         }catch(e){ this.diag('❌ preview: '+(e&&e.message?e.message:e)); this._setStatus('Lecture indisponible.'); }
       };
 
-      // ---- Télécharger WAV ----
+      // Télécharger WAV
       TTSWidget.prototype.handleDownload = async function(){
         var text=(this.$text.value||'').trim(); if(!text){ this._setStatus('Ajoute du texte.'); this.$text.focus(); return; }
-        if(!await this.ensureMeSpeak()){ this._setStatus('Génération impossible.'); return; }
+        if(!this._meReady){ this._setStatus('Chargement de la voix…'); await this._onReady(); }
+        if(!this._meReady){ this._setStatus('Génération impossible.'); return; }
         this.$download.disabled=true; this._setStatus('Génération…');
         try{
           var wav = await this.meSpeakWav(text);
-          // vitesse (re-sampling simple)
+          // vitesse (optionnel)
           var rate=parseFloat(this.$rate.value)||1; if(Math.abs(rate-1)>0.01){ try{ wav = await this.timeStretchWav(wav, rate); }catch(e){ this.diag('⚠️ timeStretch: '+(e&&e.message?e.message:e)); } }
           this.downloadBlob(wav, 'tts-'+this.timestamp()+'.wav'); this._setStatus('WAV téléchargé ✅');
         }catch(e){ this._setStatus('Génération impossible.'); this.diag('❌ download: '+(e&&e.message?e.message:e)); }
         finally{ this.$download.disabled=false; }
       };
 
-      // ---- meSpeak → WAV Blob ----
+      // meSpeak → WAV Blob
       TTSWidget.prototype.meSpeakWav = async function(text){
-        await this.ensureMeSpeak();
         return await new Promise(function(resolve, reject){
           try{
             window.meSpeak.speak(text, { rawdata: true, voice: 'fr', speed: 170, pitch: 55, amplitude: 100 }, function(ok, id, stream){
@@ -227,19 +225,27 @@
         });
       };
 
-      // ---- Audio helpers ----
+      // Audio helpers
       TTSWidget.prototype.decodeWavToAudioBuffer = async function(blob){ var ac = new (window.AudioContext||window.webkitAudioContext)(); var ab = await blob.arrayBuffer(); var buf = await ac.decodeAudioData(ab); return { ac, buf }; };
       TTSWidget.prototype.timeStretchWav = async function(wavBlob, rate){ var d = await this.decodeWavToAudioBuffer(wavBlob); var ac=d.ac, buf=d.buf; var duration = buf.duration / rate; var off = new OfflineAudioContext({ numberOfChannels: buf.numberOfChannels, length: Math.ceil(duration*ac.sampleRate), sampleRate: ac.sampleRate }); var src = new AudioBufferSourceNode(off, { buffer: buf, playbackRate: rate }); src.connect(off.destination); src.start(); var rendered = await off.startRendering(); return this.encodeWav(rendered); };
       TTSWidget.prototype.encodeWav = function(audioBuffer){ var numCh=audioBuffer.numberOfChannels, sr=audioBuffer.sampleRate; var chans=[], i,c; for(c=0;c<numCh;c++) chans.push(audioBuffer.getChannelData(c)); var frames=audioBuffer.length; var interleaved=new Float32Array(frames*numCh); for(i=0;i<frames;i++){ for(c=0;c<numCh;c++){ interleaved[i*numCh+c]=chans[c][i]; } } var pcm16=new Int16Array(interleaved.length); for(i=0;i<interleaved.length;i++){ var x=Math.max(-1,Math.min(1,interleaved[i])); pcm16[i]= x<0 ? x*0x8000 : x*0x7FFF; } var byteRate=sr*numCh*2, blockAlign=numCh*2; var buffer=new ArrayBuffer(44+pcm16.byteLength); var view=new DataView(buffer); var p=0; function wstr(s){ for(var j=0;j<s.length;j++) view.setUint8(p++, s.charCodeAt(j)); } function w16(v){ view.setUint16(p,v,true); p+=2; } function w32(v){ view.setUint32(p,v,true); p+=4; } wstr('RIFF'); w32(36+pcm16.byteLength); wstr('WAVE'); wstr('fmt '); w32(16); w16(1); w16(numCh); w32(sr); w32(byteRate); w16(blockAlign); w16(16); wstr('data'); w32(pcm16.byteLength); new Uint8Array(buffer,44).set(new Uint8Array(pcm16.buffer)); return new Blob([buffer],{type:'audio/wav'}); };
       TTSWidget.prototype.timestamp = function(){ var d=new Date(); function pad(n){ n=String(n); return n.length===1?('0'+n):n; } return d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate())+'-'+pad(d.getHours())+pad(d.getMinutes())+pad(d.getSeconds()); };
       TTSWidget.prototype.downloadBlob = function(blob, filename){ var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename; document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 1000); };
 
-      // ---- Diagnostic ----
+      // Diagnostic
       TTSWidget.prototype.runSelfTest = async function(){
         var out=[]; out.push('Navigator.isSecureContext='+(window.isSecureContext?'✅':'⚠️'));
-        // test synthèse meSpeak
-        try{ await this.ensureMeSpeak(); var wav=await this.meSpeakWav('Bonjour, ceci est un test.'); out.push('meSpeak WAV: '+wav.size+' octets ✅'); }
-        catch(e){ out.push('meSpeak WAV KO: '+(e&&e.message?e.message:e)); }
+        try{
+          // (1) charger config+voix
+          await new Promise(function(resolve, reject){ meSpeak.loadConfig('https://cdn.jsdelivr.net/npm/mespeak/mespeak_config.json', function(ok){ ok? resolve(): reject(new Error('config load')); }); });
+          await new Promise(function(resolve, reject){ meSpeak.loadVoice('https://cdn.jsdelivr.net/npm/mespeak/voices/fr.json', function(ok){ ok? resolve(): reject(new Error('voice load')); }); });
+          // (2) générer 2 phrases différentes et comparer tailles
+          var a = await this.meSpeakWav('Bonjour, ceci est un test.');
+          var b = await this.meSpeakWav('Salut, nouveau test.');
+          out.push('WAV A: '+a.size+' octets');
+          out.push('WAV B: '+b.size+' octets');
+          out.push((a.size!==b.size)?'✅ Génération OK':'⚠️ Les tailles sont identiques (vérifier audio)');
+        }catch(e){ out.push('❌ Auto-test KO: '+(e&&e.message?e.message:e)); }
         var d=document.getElementById('diag'); if(d){ d.insertAdjacentHTML('beforeend','<div>'+out.join('<br>')+'</div>'); }
       };
 
