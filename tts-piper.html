@@ -40,15 +40,15 @@
   <div class="page">
     <div class="demo">
       <div class="card">
-        <div class="status" id="status">Prêt</div>
+        <div class="status" id="status">Initialisation…</div>
         <div class="row">
           <div>
             <label for="text">Texte</label>
             <textarea id="text" placeholder="Écris ou colle un texte ici…">Bonjour et bienvenue sur notre synthèse vocale en ligne.</textarea>
             <div class="meta"><span id="count">0 caractère</span><span id="src">Source : meSpeak (WAV local)</span></div>
             <div class="controls" style="margin-top:8px">
-              <button class="btn" id="preview">▶️ Écouter</button>
-              <button class="btn" id="download">💾 Télécharger WAV</button>
+              <button class="btn" id="preview" disabled>▶️ Écouter</button>
+              <button class="btn" id="download" disabled>💾 Télécharger WAV</button>
             </div>
             <audio id="player" controls hidden></audio>
           </div>
@@ -59,7 +59,7 @@
             <label for="rate">Vitesse (sortie): <span id="rateVal">1.00×</span></label>
             <input id="rate" type="range" min="0.7" max="1.4" value="1" step="0.05" />
             <div style="height:8px"></div>
-            <div style="font-size:.85rem;color:#bbb">Astuces : choisis une variante (grave/femme/robot), écoute, puis télécharge en WAV. Tout est généré dans ton navigateur.</div>
+            <div style="font-size:.85rem;color:#bbb">Astuces : choisis une variante (grave/neutre/femme/robot), écoute, puis télécharge en WAV. Tout est généré dans ton navigateur.</div>
           </div>
         </div>
       </div>
@@ -74,10 +74,15 @@
     </div>
   </div>
 
-  <!-- meSpeak (bibliothèque). Version épinglée pour stabilité. -->
-  <script src="https://cdn.jsdelivr.net/npm/mespeak@2.0.2/mespeak.min.js"></script>
   <script>
     (function(){
+      const $ = sel => document.querySelector(sel);
+      const status = (msg, cls='')=>{ const el=$('#status'); el.textContent=msg; el.className='status '+cls; };
+      const diag = (line)=>{ const d=$('#diag'); if(d) d.insertAdjacentHTML('beforeend', `<div>${line}</div>`); };
+
+      const vSel=$('#voice'), txt=$('#text'), cnt=$('#count'), rate=$('#rate'), rateVal=$('#rateVal'), player=$('#player');
+      const btnPrev=$('#preview'), btnDown=$('#download'), btnTest=$('#selftest');
+
       const VOICES = [
         {id:'fr:m3', label:'FR — Homme (m3)', opt:{voice:'fr', variant:'m3'}},
         {id:'fr:m1', label:'FR — Neutre (m1)', opt:{voice:'fr', variant:'m1'}},
@@ -85,86 +90,90 @@
         {id:'fr:robot', label:'FR — Robot (rapide)', opt:{voice:'fr', variant:'m1', speed:200, pitch:40}}
       ];
 
-      const $ = sel => document.querySelector(sel);
-      const status = (msg, cls='')=>{ const el=$('#status'); el.textContent=msg; el.className='status '+cls; };
-      const diag = (line)=>{ const d=$('#diag'); if(d) d.insertAdjacentHTML('beforeend', `<div>${line}</div>`); };
-
-      // UI refs
-      const vSel=$('#voice'), txt=$('#text'), cnt=$('#count'), rate=$('#rate'), rateVal=$('#rateVal'), player=$('#player');
-      const btnPrev=$('#preview'), btnDown=$('#download'), btnTest=$('#selftest');
-
-      // Populate voices
       function populateVoices(){ vSel.innerHTML=''; VOICES.forEach(v=>{ const o=document.createElement('option'); o.value=v.id; o.textContent=v.label; vSel.appendChild(o); }); }
-
       function updateCount(){ const n=(txt.value||'').length; cnt.textContent = n+(n>1?' caractères':' caractère'); }
       function autoresize(){ txt.style.height='auto'; const max=420; txt.style.height=Math.min(txt.scrollHeight+2, max)+'px'; }
-
-      // Load meSpeak config+voice
-      async function initMeSpeak(){
-        if(!window.meSpeak){ status('❌ Bibliothèque meSpeak non chargée (bloquée par l’iframe ?)','err'); diag('meSpeak undefined'); return false; }
-        status('⏳ Chargement meSpeak…');
-        try{
-          await new Promise((resolve,reject)=> meSpeak.loadConfig('https://cdn.jsdelivr.net/npm/mespeak@2.0.2/mespeak_config.json', ok=> ok?resolve():reject(new Error('config'))));
-          await new Promise((resolve,reject)=> meSpeak.loadVoice('https://cdn.jsdelivr.net/npm/mespeak@2.0.2/voices/fr.json', ok=> ok?resolve():reject(new Error('voice'))));
-          status('✅ Prêt','ok');
-          return true;
-        }catch(e){ status('❌ Échec chargement meSpeak ('+(e&&e.message||e)+')','err'); diag('init error: '+(e&&e.message||e)); return false; }
-      }
-
-      // Synthesize to data URL (WAV)
-      function synthDataUrl(text){
-        if(!window.meSpeak) throw new Error('meSpeak non chargé');
-        const sel = VOICES.find(v=>v.id===vSel.value) || VOICES[0];
-        const speed = ((parseFloat(rate.value)||1)*100)|0; // meSpeak speed 80..450 (approx). 100 ~ 1x
-        const opts = Object.assign({ rawdata:'data-url', amplitude:100, pitch: (sel.opt.pitch||50), speed: (sel.opt.speed||100) }, sel.opt);
-        // meSpeak.speak retourne une data URL synchronement quand rawdata='data-url'
-        const dataUrl = meSpeak.speak(text, opts);
-        if(!dataUrl || typeof dataUrl!=='string' || !dataUrl.startsWith('data:')) throw new Error('data-url vide');
-        return dataUrl;
-      }
-
-      function downloadDataUrl(dataUrl, filename){ const a=document.createElement('a'); a.href=dataUrl; a.download=filename; document.body.appendChild(a); a.click(); setTimeout(()=>{ a.remove(); }, 100); }
       function timestamp(){ const d=new Date(); const pad=n=>String(n).padStart(2,'0'); return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`; }
+      function downloadDataUrl(dataUrl, filename){ const a=document.createElement('a'); a.href=dataUrl; a.download=filename; document.body.appendChild(a); a.click(); setTimeout(()=>{ a.remove(); }, 100); }
 
-      // Event handlers
-      btnPrev.addEventListener('click', ()=>{
+      // --- Charge meSpeak de manière fiable (essaye 2 CDNs) ---
+      async function loadMeSpeakScript(){
+        const urls=[
+          'https://cdn.jsdelivr.net/npm/mespeak@2.0.2/mespeak.min.js',
+          'https://unpkg.com/mespeak@2.0.2/mespeak.min.js'
+        ];
+        for(const src of urls){
+          try{ await new Promise((res, rej)=>{ const s=document.createElement('script'); s.src=src; s.async=false; s.onload=()=>res(); s.onerror=()=>rej(new Error('load '+src)); document.head.appendChild(s); }); if(window.meSpeak){ diag('✅ meSpeak chargé depuis: '+src); return true; } }
+          catch(e){ diag('⚠️ meSpeak script KO: '+e.message); }
+        }
+        return false;
+      }
+
+      // --- Initialise meSpeak (voix FR) ---
+      async function initMeSpeak(){
+        if(!window.meSpeak){ const ok = await loadMeSpeakScript(); if(!ok){ status('❌ meSpeak non chargé','err'); return false; } }
+        try{
+          // v2: pas besoin de loadConfig ; on charge directement la voix FR depuis jsDelivr
+          await new Promise((resolve,reject)=> window.meSpeak.loadVoice('https://cdn.jsdelivr.net/npm/mespeak@2.0.2/voices/fr.json', ok=> ok?resolve():reject(new Error('voice'))));
+          status('✅ Prêt','ok');
+          btnPrev.disabled=false; btnDown.disabled=false;
+          return true;
+        }catch(e){ status('❌ Échec voix FR ('+(e&&e.message||e)+')','err'); diag('init voice error: '+(e&&e.message||e)); return false; }
+      }
+
+      // --- Génère un WAV (data URL) en ASYNC (API v2: callback requis) ---
+      function synthDataUrlAsync(text){
+        return new Promise((resolve,reject)=>{
+          if(!window.meSpeak) return reject(new Error('meSpeak non chargé'));
+          const sel = VOICES.find(v=>v.id===vSel.value) || VOICES[0];
+          const speed = Math.round((parseFloat(rate.value)||1)*100); // ~100 = 1×
+          const opts = Object.assign({ rawdata: 'data-url', amplitude:100, pitch:(sel.opt.pitch||50), speed:(sel.opt.speed||speed) }, sel.opt);
+          try{
+            window.meSpeak.speak(text, opts, (ok, id, stream)=>{
+              if(ok && typeof stream==='string' && stream.startsWith('data:')) return resolve(stream);
+              if(!ok) return reject(new Error(id||'génération'));
+              return reject(new Error('flux inattendu'));
+            });
+          }catch(e){ reject(e); }
+        });
+      }
+
+      // --- Actions ---
+      btnPrev.addEventListener('click', async ()=>{
         const t=(txt.value||'').trim()||'Bonjour, ceci est un test.';
         try{
-          const url = synthDataUrl(t);
-          player.hidden=false; player.src=url; player.play().catch(()=>{});
+          status('Génération pour écoute…');
+          const url = await synthDataUrlAsync(t);
+          player.hidden=false; player.src=url; await player.play().catch(()=>{});
           status('Lecture');
         }catch(e){ status('❌ Lecture indisponible ('+(e&&e.message||e)+')','err'); diag('preview: '+(e&&e.message||e)); }
       });
 
-      btnDown.addEventListener('click', ()=>{
+      btnDown.addEventListener('click', async ()=>{
         const t=(txt.value||'').trim(); if(!t){ status('Ajoute du texte.'); txt.focus(); return; }
         try{
-          const url = synthDataUrl(t);
+          status('Génération…');
+          const url = await synthDataUrlAsync(t);
           downloadDataUrl(url, 'tts-'+timestamp()+'.wav');
           status('WAV téléchargé ✅','ok');
         }catch(e){ status('❌ Génération impossible ('+(e&&e.message||e)+')','err'); diag('download: '+(e&&e.message||e)); }
       });
 
-      btnTest.addEventListener('click', ()=>{
+      btnTest.addEventListener('click', async ()=>{
         const out=[]; out.push('Navigator.isSecureContext='+(window.isSecureContext?'✅':'⚠️'));
-        if(!window.meSpeak){ out.push('meSpeak: ❌ non chargé'); $('#diag').innerHTML=out.join('<br>'); return; }
-        try{
-          const a=synthDataUrl('Bonjour, ceci est un test.');
-          const b=synthDataUrl('Salut, nouveau test.');
-          out.push('WAV data-url A: '+a.length+' chars');
-          out.push('WAV data-url B: '+b.length+' chars');
-          out.push((a!==b)?'✅ Génération OK':'⚠️ Tailles identiques (vérifier audio)');
-        }catch(e){ out.push('❌ Auto-test KO: '+(e&&e.message||e)); }
+        out.push('meSpeak présent: '+(!!window.meSpeak?'✅':'❌'));
+        try{ const a=await synthDataUrlAsync('Bonjour, ceci est un test.'); const b=await synthDataUrlAsync('Salut, nouveau test.'); out.push('WAV data-url A: '+a.length+' chars'); out.push('WAV data-url B: '+b.length+' chars'); out.push((a!==b)?'✅ Génération OK':'⚠️ Même taille (vérifier audio)'); }
+        catch(e){ out.push('❌ Auto-test KO: '+(e&&e.message||e)); }
         $('#diag').innerHTML=out.join('<br>');
       });
 
-      // Init UI
+      // UI init
       populateVoices();
       updateCount(); autoresize(); txt.addEventListener('input', ()=>{ updateCount(); autoresize(); });
       rate.addEventListener('input', ()=>{ const v=parseFloat(rate.value)||1; rateVal.textContent=v.toFixed(2)+'×'; });
 
       // Boot
-      initMeSpeak();
+      (async ()=>{ await initMeSpeak(); })();
     })();
   </script>
 </body>
