@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="light dark" />
-  <title>Texte → Parole (Piper, hors quota)</title>
+  <title>Texte → Parole (Piper + fallback WAV)</title>
   <style>
     :root{ color-scheme: light dark; }
     body{margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, "Helvetica Neue", Arial; background:#222222; color:#f2f2f2}
@@ -29,24 +29,28 @@
     </div>
   </div>
 
-  <!-- Page autonome pour iframe : un unique module ESM -->
+  <!-- 1) meSpeak (fallback garanti WAV, sans quota) -->
+  <script src="https://cdn.jsdelivr.net/npm/mespeak/mespeak.min.js"></script>
+
+  <!-- 2) Piper (voix neurales réalistes) : module ESM, peut être bloqué dans certains contextes -->
   <script type="module">
-    // 1) Charger Piper (ESM). Dans un iframe public (https), ça fonctionne sur Wix.
+    // On tente de charger Piper (ESM). Si échec → on reste en fallback meSpeak uniquement.
     let piper = null;
-    try {
-      piper = await import('https://cdn.jsdelivr.net/npm/@mintplex-labs/piper-tts-web/+esm');
-    } catch (e) {
-      console.error('Piper non chargé (ESM):', e);
-    }
+    try { piper = await import('https://cdn.jsdelivr.net/npm/@mintplex-labs/piper-tts-web/+esm'); }
+    catch (e) { console.warn('Piper non chargé (ESM):', e); }
 
     const BRAND = '#00FFA3';
-    // Modèles FR courants (Piper). On n'affiche QUE ceux-ci → tous téléchargeables
-    const FR_MODELS = [
+
+    // Modèles FR connus côté Piper (IDs officiels)
+    const PIPER_FR = [
       { id: 'fr_FR-siwis-medium', label: 'FR — siwis (medium)' },
       { id: 'fr_FR-tom-medium',   label: 'FR — tom (medium)' },
       { id: 'fr_FR-gilles-low',   label: 'FR — gilles (low)' },
       { id: 'fr_FR-upmc-medium',  label: 'FR — upmc (medium)' }
     ];
+
+    // Fallback meSpeak (voix FR intégrée)
+    const MESPEAK_VOICE = { id: 'me:fr', label: 'FR — Classique (meSpeak, téléchargement garanti)' };
 
     const $ = (root, sel) => root.querySelector(sel);
     const setTxt = (el, t) => { if(el) el.textContent = t; };
@@ -94,7 +98,7 @@
         </style>
         <div class='card'>
           <div class='header'>
-            <div class='title'>Texte → Parole (Piper)</div>
+            <div class='title'>Texte → Parole (Piper + WAV)</div>
             <div class='status' id='status' aria-live='polite'>Prêt</div>
           </div>
           <div class='grid'>
@@ -105,13 +109,13 @@
                 <div class='step'>Étape 3 — <em>Écris ton texte</em></div>
                 <div class='step'>Étape 4 — <em>Écoute</em> puis <em>Télécharge</em></div>
               </div>
-              <label for='voice'>Voix (téléchargeables)</label>
+              <label for='voice'>Voix utilisables (téléchargeables)</label>
               <select id='voice' aria-label='Choisir la voix'></select>
               <div class='controls'>
                 <button class='btn' id='preload'>⬇️ Précharger la voix</button>
                 <button class='btn' id='preview'>▶️ Écouter</button>
               </div>
-              <div class='foot'>Première fois : le modèle (8–20 Mo) se télécharge et reste en cache navigateur.</div>
+              <div class='foot'>Première fois : le modèle (8–20 Mo) se télécharge et reste en cache navigateur (Piper). Le mode meSpeak ne télécharge rien.</div>
               <progress id='dlprog' max='100' value='0' hidden></progress>
               <div id='dlmsg' style='font-size:.85rem;color:#bbb'></div>
             </div>
@@ -155,13 +159,17 @@
         this.$diag = document.getElementById('diag');
 
         // state
-        this.storeKey = 'tts_piper_widget_v3';
+        this.storeKey = 'tts_piper_widget_v4';
         this.state = { voiceId:'', rate:1, text:'' };
+
+        // runtime flags
+        this._piper = piper || null;       // null si non chargé
+        this._meReady = false;             // meSpeak prêt ?
       }
 
       _bind(){
         this.$voice.addEventListener('change', ()=>{ this.state.voiceId = this.$voice.value; this._save(); this._updateModelInfo(); });
-        this.$preload.addEventListener('click', ()=> this.preloadModel());
+        this.$preload.addEventListener('click', ()=> this.preloadSelected());
         this.$preview.addEventListener('click', ()=> this.handlePreview());
         this.$download.addEventListener('click', ()=> this.handleDownload());
         this.$text.addEventListener('input', ()=>{ this.state.text=this.$text.value; this._save(); this._updateCount(); this._autoresize(); });
@@ -172,108 +180,140 @@
 
       async _onReady(){
         this._load();
-        // Voix configurées uniquement (évite le bug « toujours la même voix »)
-        this.$voice.innerHTML='';
-        for(const v of FR_MODELS){ const opt=document.createElement('option'); opt.value=v.id; opt.textContent=v.label; this.$voice.appendChild(opt); }
-        const ids = FR_MODELS.map(v=>v.id);
-        this.$voice.value = (this.state.voiceId && ids.includes(this.state.voiceId)) ? this.state.voiceId : FR_MODELS[0].id;
-        this.state.voiceId = this.$voice.value; this._save();
+        await this.ensureMeSpeak();
+        this._populateVoices();
         setTxt(this.$rateVal, (this.state.rate||1).toFixed(2)+'×');
         if(this.state.text) this.$text.value = this.state.text;
         this._autoresize(); this._updateCount(); this._updateModelInfo();
-
-        // Si Piper non chargé, on désactive le téléchargement (mais écoute navigateur possible)
-        if(!piper){ this._setStatus('Piper non chargé (environnement). Essaie en iframe public.'); this.$download.disabled=true; }
+        this.$download.disabled = false; // téléchargement possible via meSpeak même sans Piper
+        if(!this._piper){ this._setStatus('Piper indisponible ici → fallback meSpeak actif'); }
       }
 
-      // state
-      _load(){ try{ const s=JSON.parse(localStorage.getItem(this.storeKey)||'{}'); Object.assign(this.state, s); }catch{} }
-      _save(){ try{ localStorage.setItem(this.storeKey, JSON.stringify(this.state)); }catch{} }
+      // ------- Loaders -------
+      async ensureMeSpeak(){
+        if(this._meReady) return true;
+        try{
+          await new Promise((resolve, reject)=>{
+            // le core inclut une config par défaut depuis meSpeak 2.0 ; on charge juste la voix FR
+            window.meSpeak.loadVoice('https://cdn.jsdelivr.net/npm/mespeak/voices/fr.json', (ok)=> ok? resolve(): reject(new Error('voice load')));
+          });
+          this._meReady = true; return true;
+        }catch(e){ this.diag('❌ meSpeak voice FR: '+(e&&e.message?e.message:e)); return false; }
+      }
 
-      // ui helpers
+      _populateVoices(){
+        this.$voice.innerHTML='';
+        if(this._piper){ for(const v of PIPER_FR){ const opt=document.createElement('option'); opt.value=v.id; opt.textContent=v.label; this.$voice.appendChild(opt); } }
+        // Toujours ajouter le fallback meSpeak (téléchargeable partout)
+        const optMe = document.createElement('option'); optMe.value = MESPEAK_VOICE.id; optMe.textContent = MESPEAK_VOICE.label; this.$voice.appendChild(optMe);
+        // Sélection
+        const allowed = [...(this._piper?PIPER_FR.map(v=>v.id):[]), MESPEAK_VOICE.id];
+        this.$voice.value = (this.state.voiceId && allowed.includes(this.state.voiceId)) ? this.state.voiceId : (this._piper?PIPER_FR[0].id:MESPEAK_VOICE.id);
+        this.state.voiceId = this.$voice.value; this._save();
+      }
+
+      // ------- UI helpers -------
       _updateCount(){ const n=(this.$text.value||'').length; setTxt(this.$count, n+(n>1?' caractères':' caractère')); }
       _autoresize(){ const el=this.$text; el.style.height='auto'; const max=420; el.style.height=Math.min(el.scrollHeight+2, max)+'px'; }
       _setStatus(s){ setTxt(this.$status,s); }
-      _updateModelInfo(){ const id=this.$voice.value; setTxt(this.$modelInfo, id?('Modèle: '+id):''); }
+      _updateModelInfo(){ const id=this.$voice.value; setTxt(this.$modelInfo, id?('Source: '+(id.startsWith('me:')?'meSpeak (WAV local)':'Piper (neural)')):''); }
       diag(line){ const d=document.getElementById('diag'); if(d){ d.insertAdjacentHTML('beforeend','<div>'+line+'</div>'); } }
 
-      // ---- Préchargement modèle Piper ----
-      async preloadModel(){
-        if(!piper){ this._setStatus('Piper indisponible ici.'); return; }
-        const id=this.$voice.value; if(!id){ this._setStatus('Choisis une voix.'); return; }
-        this.$preload.disabled = true; this.$download.disabled = true; this.$prog.hidden=false; this.$prog.value=0; setTxt(this.$msg,'Téléchargement du modèle…');
+      // ------- Actions -------
+      async preloadSelected(){
+        const id=this.$voice.value;
+        if(id.startsWith('me:')){ this._setStatus('Rien à précharger (meSpeak).'); return; }
+        if(!this._piper){ this._setStatus('Piper indisponible (contexte).'); return; }
+        this.$preload.disabled = true; this.$prog.hidden=false; this.$prog.value=0; setTxt(this.$msg,'Téléchargement du modèle…');
         try{
-          await piper.download(id, (prog)=>{ if(prog && prog.total){ const v=Math.round((prog.loaded*100)/prog.total); this.$prog.value=v; setTxt(this.$msg, 'Téléchargement '+v+'% — '+(prog.url.split('/').pop())); } });
-          setTxt(this.$msg, 'Modèle en cache ✅'); this._setStatus('Prêt'); this.$download.disabled=false;
-        }catch(e){ setTxt(this.$msg, 'Échec téléchargement : '+(e&&e.message?e.message:e)); this.diag('❌ download: '+(e&&e.message?e.message:e)); }
-        finally{ this.$preload.disabled=false; this.$prog.hidden=true; }
+          await this._piper.download(id, (prog)=>{ if(prog && prog.total){ const v=Math.round((prog.loaded*100)/prog.total); this.$prog.value=v; setTxt(this.$msg, 'Téléchargement '+v+'% — '+(prog.url.split('/').pop())); } });
+          setTxt(this.$msg, 'Modèle en cache ✅'); this._setStatus('Prêt');
+        }catch(e){
+          setTxt(this.$msg, 'Échec téléchargement : '+(e&&e.message?e.message:e));
+          this.diag('❌ Piper download '+id+': '+(e&&e.message?e.message:e));
+        }finally{ this.$preload.disabled=false; this.$prog.hidden=true; }
       }
 
-      // ---- Lecture (pré-écoute) Piper (si dispo) sinon Web Speech ----
       async handlePreview(){
         const text=(this.$text.value||'').trim() || 'Bonjour, ceci est un test.';
         const id=this.$voice.value;
-        // Si Piper est là, la pré‑écoute UTILISE LA VOIX SÉLECTIONNÉE (fix du bug)
-        if(piper){
+        // 1) Piper si dispo ET si une voix Piper est choisie
+        if(this._piper && !id.startsWith('me:')){
           try{
-            this._setStatus('Génération pour écoute…');
-            const wav = await piper.predict({ text, voiceId: id });
+            this._setStatus('Génération (Piper)…');
+            const wav = await this._piper.predict({ text, voiceId: id });
             const url = URL.createObjectURL(wav);
             this.$player.hidden=false; this.$player.src=url; await this.$player.play().catch(()=>{});
-            this._setStatus('Lecture (Piper)');
-            return;
-          }catch(e){ this.diag('❌ preview/predict: '+(e&&e.message?e.message:e)); }
+            this._setStatus('Lecture (Piper)'); return;
+          }catch(e){
+            this.diag('❌ preview/predict (Piper): '+(e&&e.message?e.message:e));
+            this._setStatus('Piper en erreur, bascule meSpeak…');
+          }
         }
-        // Fallback lecture navigateur (voix locale du navigateur, peut sembler « toujours la même »)
-        if('speechSynthesis' in window){
-          const u = new SpeechSynthesisUtterance(text); u.lang='fr-FR'; u.rate = parseFloat(this.$rate.value)||1; u.onstart=()=>this._setStatus('Lecture (navigateur)…'); u.onend=()=>this._setStatus('Prêt'); speechSynthesis.speak(u);
+        // 2) meSpeak (garanti)
+        if(await this.ensureMeSpeak()){
+          try{
+            const wavBlob = await this.meSpeakWav(text);
+            const url = URL.createObjectURL(wavBlob);
+            this.$player.hidden=false; this.$player.src=url; await this.$player.play().catch(()=>{});
+            this._setStatus('Lecture (meSpeak)'); return;
+          }catch(e){ this.diag('❌ meSpeak preview: '+(e&&e.message?e.message:e)); this._setStatus('Lecture indisponible.'); }
         } else { this._setStatus('Lecture indisponible.'); }
       }
 
-      // ---- Télécharger WAV ----
       async handleDownload(){
         const text=(this.$text.value||'').trim(); if(!text){ this._setStatus('Ajoute du texte.'); this.$text.focus(); return; }
-        if(!piper){ this._setStatus('Piper indisponible ici — utilise un iframe public.'); return; }
-        const id=this.$voice.value; if(!id){ this._setStatus('Choisis une voix.'); return; }
-        this.$download.disabled=true; this._setStatus('Génération…');
-        let wav=null; let hadToDownload=false;
-        try{
-          wav = await piper.predict({ text, voiceId: id }, (prog)=>{ if(prog && prog.total){ const v=Math.round((prog.loaded*100)/prog.total); this.$prog.hidden=false; this.$prog.value=v; setTxt(this.$msg, 'Chargement modèle '+v+'%'); hadToDownload=true; } });
-        }catch(e){ this.diag('❌ predict: '+(e&&e.message?e.message:e)); }
-        finally{ this.$prog.hidden=true; setTxt(this.$msg, hadToDownload? 'Modèle mis en cache ✅' : ''); }
-
-        if(!wav){ this._setStatus('Génération impossible.'); this.$download.disabled=false; return; }
-
+        const id=this.$voice.value;
+        let blob=null;
+        if(this._piper && !id.startsWith('me:')){
+          try{
+            this._setStatus('Génération (Piper)…');
+            blob = await this._piper.predict({ text, voiceId: id });
+          }catch(e){ this.diag('❌ predict (Piper): '+(e&&e.message?e.message:e)); this._setStatus('Piper en erreur, bascule meSpeak…'); }
+        }
+        if(!blob){
+          try{ blob = await this.meSpeakWav(text); }
+          catch(e){ this._setStatus('Génération impossible.'); this.diag('❌ meSpeak gen: '+(e&&e.message?e.message:e)); return; }
+        }
         // Vitesse (re-échantillonnage simple)
-        const rate=parseFloat(this.$rate.value)||1; if(Math.abs(rate-1)>0.01){ try{ wav = await this.timeStretchWav(wav, rate); }catch(e){ this.diag('⚠️ timeStretch: '+(e&&e.message?e.message:e)); } }
-
-        this.downloadBlob(wav, `tts-${this.timestamp()}.wav`);
-        this._setStatus('WAV téléchargé ✅'); this.$download.disabled=false;
+        const rate=parseFloat(this.$rate.value)||1; if(Math.abs(rate-1)>0.01){ try{ blob = await this.timeStretchWav(blob, rate); }catch(e){ this.diag('⚠️ timeStretch: '+(e&&e.message?e.message:e)); } }
+        this.downloadBlob(blob, `tts-${this.timestamp()}.wav`);
+        this._setStatus('WAV téléchargé ✅');
       }
 
-      // ---- Audio helpers ----
+      // ------- meSpeak helper → WAV Blob -------
+      async meSpeakWav(text){
+        await this.ensureMeSpeak();
+        return await new Promise((resolve, reject)=>{
+          try{
+            window.meSpeak.speak(text, { rawdata: true, voice: 'fr', speed: 170, pitch: 55, amplitude: 100 }, (ok, id, stream)=>{
+              if(ok && stream){ resolve(new Blob([stream], {type:'audio/wav'})); }
+              else reject(new Error('meSpeak stream vide'));
+            });
+          }catch(e){ reject(e); }
+        });
+      }
+
+      // ------- Audio helpers -------
       async decodeWavToAudioBuffer(blob){ const ac = new (window.AudioContext||window.webkitAudioContext)(); const ab = await blob.arrayBuffer(); const buf = await ac.decodeAudioData(ab); return { ac, buf }; }
       async timeStretchWav(wavBlob, rate){ const { ac, buf } = await this.decodeWavToAudioBuffer(wavBlob); const duration = buf.duration / rate; const off = new OfflineAudioContext({ numberOfChannels: buf.numberOfChannels, length: Math.ceil(duration*ac.sampleRate), sampleRate: ac.sampleRate }); const src = new AudioBufferSourceNode(off, { buffer: buf, playbackRate: rate }); src.connect(off.destination); src.start(); const rendered = await off.startRendering(); return this.encodeWav(rendered); }
       encodeWav(audioBuffer){ const numCh=audioBuffer.numberOfChannels, sr=audioBuffer.sampleRate; const chans=[]; for(let c=0;c<numCh;c++) chans.push(audioBuffer.getChannelData(c)); const frames=audioBuffer.length; const inter=new Float32Array(frames*numCh); for(let i=0;i<frames;i++){ for(let c=0;c<numCh;c++){ inter[i*numCh+c]=chans[c][i]; } } const pcm16=new Int16Array(inter.length); for(let i=0;i<inter.length;i++){ let x=Math.max(-1,Math.min(1,inter[i])); pcm16[i]= x<0 ? x*0x8000 : x*0x7FFF; } const byteRate=sr*numCh*2, blockAlign=numCh*2; const buffer=new ArrayBuffer(44+pcm16.byteLength); const view=new DataView(buffer); let p=0; const wstr=s=>{ for(let i=0;i<s.length;i++) view.setUint8(p++, s.charCodeAt(i)); }; const w16=v=>{ view.setUint16(p,v,true); p+=2; }; const w32=v=>{ view.setUint32(p,v,true); p+=4; }; wstr('RIFF'); w32(36+pcm16.byteLength); wstr('WAVE'); wstr('fmt '); w32(16); w16(1); w16(numCh); w32(sr); w32(byteRate); w16(blockAlign); w16(16); wstr('data'); w32(pcm16.byteLength); new Uint8Array(buffer,44).set(new Uint8Array(pcm16.buffer)); return new Blob([buffer],{type:'audio/wav'}); }
       timestamp(){ const d=new Date(); const pad=n=>String(n).padStart(2,'0'); return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`; }
       downloadBlob(blob, filename){ const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename; document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 1000); }
 
-      // ---- Diagnostic + tests ----
+      // ------- Diagnostic + tests -------
       async runSelfTest(){
         const out=[]; out.push('Navigator.isSecureContext='+(window.isSecureContext?'✅':'⚠️'));
-        out.push('Module Piper chargé: '+(piper?'✅':'❌'));
-        out.push('Voix FR configurées: '+ FR_MODELS.map(v=>v.id).join(', '));
-        // Test: synthétiser 2 voix différentes et comparer la taille → doit différer
-        if(piper){
-          try{
-            const t='Bonjour, ceci est un test.';
-            const v1=FR_MODELS[0].id, v2=FR_MODELS[1].id;
-            const b1=await piper.predict({ text:t, voiceId:v1 });
-            const b2=await piper.predict({ text:t, voiceId:v2 });
-            out.push(`Test audio 1 (${v1}): ${b1.size} o`);
-            out.push(`Test audio 2 (${v2}): ${b2.size} o`);
-            out.push((b1.size!==b2.size)?'✅ Les sorties diffèrent (OK)':'⚠️ Tailles identiques (contrôle manuel)');
-          }catch(e){ out.push('⚠️ Test voix KO: '+(e&&e.message?e.message:e)); }
+        out.push('Piper chargé (ESM): '+(this._piper?'✅':'❌'));
+        out.push('meSpeak prêt: '+(this._meReady?'✅':'❌'));
+        out.push('Voix listées: '+ Array.from(this.$voice.options).map(o=>o.textContent).join(' | '));
+        // Test meSpeak
+        try{ const wav=await this.meSpeakWav('Bonjour test.'); out.push('meSpeak WAV: '+wav.size+' octets ✅'); }
+        catch(e){ out.push('meSpeak WAV KO: '+(e&&e.message?e.message:e)); }
+        // Test Piper (si dispo)
+        if(this._piper){
+          try{ const wav=await this._piper.predict({ text:'Test Piper.', voiceId: PIPER_FR[0].id }); out.push('Piper WAV: '+wav.size+' octets ✅'); }
+          catch(e){ out.push('Piper KO: '+(e&&e.message?e.message:e)); }
         }
         this.diag(out.join('<br>'));
       }
