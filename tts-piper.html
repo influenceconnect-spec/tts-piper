@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="light dark" />
-  <title>Texte → Parole (Piper + fallback WAV)</title>
+  <title>Texte → Parole (WAV local, sans quota)</title>
   <style>
     :root{ color-scheme: light dark; }
     body{margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, "Helvetica Neue", Arial; background:#222222; color:#f2f2f2}
@@ -29,121 +29,101 @@
     </div>
   </div>
 
-  <!-- 1) meSpeak (fallback garanti WAV, sans quota) -->
+  <!-- meSpeak: synthèse TTS locale (WAV), 0 quota, 0 clé, fonctionne partout -->
   <script src="https://cdn.jsdelivr.net/npm/mespeak/mespeak.min.js"></script>
 
-  <!-- 2) Piper (voix neurales réalistes) : module ESM, peut être bloqué dans certains contextes -->
-  <script type="module">
-    // On tente de charger Piper (ESM). Si échec → on reste en fallback meSpeak uniquement.
-    let piper = null;
-    try { piper = await import('https://cdn.jsdelivr.net/npm/@mintplex-labs/piper-tts-web/+esm'); }
-    catch (e) { console.warn('Piper non chargé (ESM):', e); }
+  <script>
+    (function(){
+      var BRAND = '#00FFA3';
+      var ONLY_VOICE = { id: 'me:fr', label: 'FR — Classique (WAV local garanti)' };
 
-    const BRAND = '#00FFA3';
+      function $(root, sel){ return root.querySelector(sel); }
+      function setTxt(el, t){ if(el) el.textContent = t; }
 
-    // Modèles FR connus côté Piper (IDs officiels)
-    const PIPER_FR = [
-      { id: 'fr_FR-siwis-medium', label: 'FR — siwis (medium)' },
-      { id: 'fr_FR-tom-medium',   label: 'FR — tom (medium)' },
-      { id: 'fr_FR-gilles-low',   label: 'FR — gilles (low)' },
-      { id: 'fr_FR-upmc-medium',  label: 'FR — upmc (medium)' }
-    ];
+      function TTSWidget(){ return Reflect.construct(HTMLElement, [], TTSWidget); }
+      TTSWidget.prototype = Object.create(HTMLElement.prototype);
+      TTSWidget.prototype.constructor = TTSWidget;
+      TTSWidget.prototype.connectedCallback = function(){ if(!this._init){ this._render(); this._bind(); this._init=true; this._onReady(); } };
 
-    // Fallback meSpeak (voix FR intégrée)
-    const MESPEAK_VOICE = { id: 'me:fr', label: 'FR — Classique (meSpeak, téléchargement garanti)' };
-
-    const $ = (root, sel) => root.querySelector(sel);
-    const setTxt = (el, t) => { if(el) el.textContent = t; };
-
-    class TTSWidget extends HTMLElement{
-      constructor(){ super(); this.attachShadow({mode:'open'}); }
-      connectedCallback(){ if(!this._init){ this._render(); this._bind(); this._init=true; this._onReady(); } }
-
-      _render(){
-        const html = `
-        <style>
-          *,*::before,*::after{box-sizing:border-box}
-          :host{--radius:16px; --gap:12px; --pad:14px; --bg:#2b2b2b; --border:#3b3b3b; --text:#f2f2f2; --muted:#bfbfbf; --brand:${BRAND}; display:block}
-          .card{background:var(--bg); border:1px solid var(--border); border-radius:16px; padding:clamp(12px, 2.2vw, 18px); width:100%;}
-          .header{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px}
-          .title{font-weight:700; font-size:clamp(1.1rem, 1.2vw + .8rem, 1.5rem);}
-          .status{font-size:.9rem; color:var(--muted)}
-          .grid{display:grid; gap:12px; grid-auto-rows:min-content}
-          @media(min-width:900px){.grid{grid-template-columns: minmax(0,1fr) minmax(260px, 420px);}}
-          .fieldset{display:grid; gap:8px; min-width:0}
-          label{font-size:.9rem; color:var(--muted)}
-          select, textarea, input[type="range"], button{font: inherit; color:var(--text)}
-          textarea{resize:none; min-height:160px; width:100%; border-radius:12px; padding:14px; outline:none; border:1px solid var(--border); background:#1f1f1f}
-          textarea:focus{box-shadow: 0 0 0 3px rgba(0,255,163,.25)}
-          .controls{display:flex; flex-wrap:wrap; gap:10px}
-          .btn{border:1px solid var(--brand); background:var(--brand); padding:10px 14px; border-radius:999px; cursor:pointer; display:inline-flex; gap:8px; align-items:center; color:#000; font-weight:700}
-          .btn[disabled]{opacity:.6; cursor:not-allowed}
-          .btn:hover{filter:brightness(1.03)}
-          .btn:focus-visible{outline:none; box-shadow:0 0 0 3px rgba(0,255,163,.4)}
-          .sliders{display:grid; gap:8px}
-          .slider-row{display:grid; grid-template-columns: 1fr auto; align-items:center; gap:10px}
-          input[type="range"]{width:100%; accent-color: var(--brand);}
-          input[type="range"]::-webkit-slider-runnable-track{height:6px; border-radius:999px; background: rgba(0,255,163,.3)}
-          input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none; appearance:none; width:18px; height:18px; border-radius:50%; background: var(--brand); border:2px solid #000; margin-top:-6px}
-          input[type="range"]::-moz-range-track{height:6px; border-radius:999px; background: rgba(0,255,163,.3)}
-          input[type="range"]::-moz-range-thumb{width:18px; height:18px; border-radius:50%; background: var(--brand); border:2px solid #000}
-          select{width:100%; max-width:100%; border:1px solid var(--border); border-radius:12px; padding:10px; background:#1f1f1f}
-          .meta{display:flex; justify-content:space-between; font-size:.85rem; color:var(--muted)}
-          .foot{margin-top:8px; font-size:.8rem; color:var(--muted)}
-          .steps{display:grid; gap:6px; margin-bottom:8px}
-          .step{font-weight:700; color:#fff}
-          .step em{color:${BRAND}; font-style:normal}
-          audio{width:100%; margin-top:6px}
-          progress{width:100%; height:10px; border-radius:10px; overflow:hidden}
-        </style>
-        <div class='card'>
-          <div class='header'>
-            <div class='title'>Texte → Parole (Piper + WAV)</div>
-            <div class='status' id='status' aria-live='polite'>Prêt</div>
-          </div>
-          <div class='grid'>
-            <div class='fieldset'>
-              <div class='steps'>
-                <div class='step'>Étape 1 — <em>Choisis une voix</em></div>
-                <div class='step'>Étape 2 — <em>Précharge la voix</em> (1ère fois)</div>
-                <div class='step'>Étape 3 — <em>Écris ton texte</em></div>
-                <div class='step'>Étape 4 — <em>Écoute</em> puis <em>Télécharge</em></div>
-              </div>
-              <label for='voice'>Voix utilisables (téléchargeables)</label>
-              <select id='voice' aria-label='Choisir la voix'></select>
-              <div class='controls'>
-                <button class='btn' id='preload'>⬇️ Précharger la voix</button>
-                <button class='btn' id='preview'>▶️ Écouter</button>
-              </div>
-              <div class='foot'>Première fois : le modèle (8–20 Mo) se télécharge et reste en cache navigateur (Piper). Le mode meSpeak ne télécharge rien.</div>
-              <progress id='dlprog' max='100' value='0' hidden></progress>
-              <div id='dlmsg' style='font-size:.85rem;color:#bbb'></div>
-            </div>
-            <div class='fieldset'>
-              <label for='text'>Texte</label>
-              <textarea id='text' placeholder='Écris ou colle un texte ici…'>Bonjour et bienvenue sur notre synthèse vocale en ligne.</textarea>
-              <div class='meta'><span id='count'>0 caractère</span><span id='modelInfo'></span></div>
-              <div class='sliders'>
-                <div class='slider-row'>
-                  <label for='rate'>Vitesse (sortie): <span id='rateVal'>1.00×</span></label>
-                  <input id='rate' type='range' min='0.7' max='1.4' value='1' step='0.05' />
-                </div>
-              </div>
-              <div class='controls'>
-                <button class='btn' id='download'>💾 Télécharger</button>
-              </div>
-              <audio id='player' controls hidden></audio>
-            </div>
-          </div>
-        </div>`;
-        const tpl = document.createElement('template');
-        tpl.innerHTML = html;
-        this.shadowRoot.appendChild(tpl.content.cloneNode(true));
+      TTSWidget.prototype._render = function(){
+        this.attachShadow({mode:'open'});
+        var html = '\
+        <style>\
+          *,*::before,*::after{box-sizing:border-box}\
+          :host{--radius:16px; --gap:12px; --pad:14px; --bg:#2b2b2b; --border:#3b3b3b; --text:#f2f2f2; --muted:#bfbfbf; --brand:'+BRAND+'; display:block}\
+          .card{background:var(--bg); border:1px solid var(--border); border-radius:16px; padding:clamp(12px, 2.2vw, 18px); width:100%;}\
+          .header{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px}\
+          .title{font-weight:700; font-size:clamp(1.1rem, 1.2vw + .8rem, 1.5rem);}\
+          .status{font-size:.9rem; color:var(--muted)}\
+          .grid{display:grid; gap:12px; grid-auto-rows:min-content}\
+          @media(min-width:900px){.grid{grid-template-columns: minmax(0,1fr) minmax(260px, 420px);}}\
+          .fieldset{display:grid; gap:8px; min-width:0}\
+          label{font-size:.9rem; color:var(--muted)}\
+          select, textarea, input[type=\'range\'], button{font: inherit; color:var(--text)}\
+          textarea{resize:none; min-height:160px; width:100%; border-radius:12px; padding:14px; outline:none; border:1px solid var(--border); background:#1f1f1f}\
+          textarea:focus{box-shadow: 0 0 0 3px rgba(0,255,163,.25)}\
+          .controls{display:flex; flex-wrap:wrap; gap:10px}\
+          .btn{border:1px solid var(--brand); background:var(--brand); padding:10px 14px; border-radius:999px; cursor:pointer; display:inline-flex; gap:8px; align-items:center; color:#000; font-weight:700}\
+          .btn[disabled]{opacity:.6; cursor:not-allowed}\
+          .btn:hover{filter:brightness(1.03)}\
+          .btn:focus-visible{outline:none; box-shadow:0 0 0 3px rgba(0,255,163,.4)}\
+          .sliders{display:grid; gap:8px}\
+          .slider-row{display:grid; grid-template-columns: 1fr auto; align-items:center; gap:10px}\
+          input[type=\'range\']{width:100%; accent-color: var(--brand);}\
+          input[type=\'range\']::-webkit-slider-runnable-track{height:6px; border-radius:999px; background: rgba(0,255,163,.3)}\
+          input[type=\'range\']::-webkit-slider-thumb{-webkit-appearance:none; appearance:none; width:18px; height:18px; border-radius:50%; background: var(--brand); border:2px solid #000; margin-top:-6px}\
+          input[type=\'range\']::-moz-range-track{height:6px; border-radius:999px; background: rgba(0,255,163,.3)}\
+          input[type=\'range\']::-moz-range-thumb{width:18px; height:18px; border-radius:50%; background: var(--brand); border:2px solid #000}\
+          select{width:100%; max-width:100%; border:1px solid var(--border); border-radius:12px; padding:10px; background:#1f1f1f}\
+          .meta{display:flex; justify-content:space-between; font-size:.85rem; color:var(--muted)}\
+          .foot{margin-top:8px; font-size:.8rem; color:var(--muted)}\
+          .steps{display:grid; gap:6px; margin-bottom:8px}\
+          .step{font-weight:700; color:#fff}\
+          .step em{color:'+BRAND+'; font-style:normal}\
+          audio{width:100%; margin-top:6px}\
+          progress{width:100%; height:10px; border-radius:10px; overflow:hidden}\
+        </style>\
+        <div class=\'card\'>\
+          <div class=\'header\'>\
+            <div class=\'title\'>Texte → Parole (WAV local)</div>\
+            <div class=\'status\' id=\'status\' aria-live=\'polite\'>Prêt</div>\
+          </div>\
+          <div class=\'grid\'>\
+            <div class=\'fieldset\'>\
+              <div class=\'steps\'>\
+                <div class=\'step\'>Étape 1 — <em>Choisis la voix</em></div>\
+                <div class=\'step\'>Étape 2 — <em>Écris ton texte</em></div>\
+                <div class=\'step\'>Étape 3 — <em>Écoute</em> puis <em>Télécharge</em></div>\
+              </div>\
+              <label for=\'voice\'>Voix disponible</label>\
+              <select id=\'voice\' aria-label=\'Choisir la voix\'></select>\
+              <div class=\'controls\'>\
+                <button class=\'btn\' id=\'preview\'>▶️ Écouter</button>\
+              </div>\
+              <div class=\'foot\'>100% dans le navigateur. Aucun quota, aucun serveur.</div>\
+            </div>\
+            <div class=\'fieldset\'>\
+              <label for=\'text\'>Texte</label>\
+              <textarea id=\'text\' placeholder=\'Écris ou colle un texte ici…\'>Bonjour et bienvenue sur notre synthèse vocale en ligne.</textarea>\
+              <div class=\'meta\'><span id=\'count\'>0 caractère</span><span id=\'modelInfo\'></span></div>\
+              <div class=\'sliders\'>\
+                <div class=\'slider-row\'>\
+                  <label for=\'rate\'>Vitesse (sortie): <span id=\'rateVal\'>1.00×</span></label>\
+                  <input id=\'rate\' type=\'range\' min=\'0.7\' max=\'1.4\' value=\'1\' step=\'0.05\' />\
+                </div>\
+              </div>\
+              <div class=\'controls\'>\
+                <button class=\'btn\' id=\'download\'>💾 Télécharger</button>\
+              </div>\
+              <audio id=\'player\' controls hidden></audio>\
+            </div>\
+          </div>\
+        </div>';
+        var tpl = document.createElement('template'); tpl.innerHTML = html; this.shadowRoot.appendChild(tpl.content.cloneNode(true));
 
         // refs
         this.$ = (sel)=>$(this.shadowRoot, sel);
         this.$voice = this.$('#voice');
-        this.$preload = this.$('#preload');
         this.$preview = this.$('#preview');
         this.$text = this.$('#text');
         this.$count = this.$('#count');
@@ -152,174 +132,119 @@
         this.$status = this.$('#status');
         this.$modelInfo = this.$('#modelInfo');
         this.$download = this.$('#download');
-        this.$prog = this.$('#dlprog');
-        this.$msg = this.$('#dlmsg');
         this.$player = this.$('#player');
         // diag (hors shadow)
         this.$diag = document.getElementById('diag');
 
         // state
-        this.storeKey = 'tts_piper_widget_v4';
-        this.state = { voiceId:'', rate:1, text:'' };
+        this.storeKey = 'tts_mespeak_widget_v1';
+        this.state = { voiceId: ONLY_VOICE.id, rate:1, text:'' };
+        this._meReady = false;
+      };
 
-        // runtime flags
-        this._piper = piper || null;       // null si non chargé
-        this._meReady = false;             // meSpeak prêt ?
-      }
+      TTSWidget.prototype._bind = function(){
+        var self=this;
+        this.$voice.addEventListener('change', function(){ self.state.voiceId = self.$voice.value; self._save(); self._updateModelInfo(); });
+        this.$preview.addEventListener('click', function(){ self.handlePreview(); });
+        this.$download.addEventListener('click', function(){ self.handleDownload(); });
+        this.$text.addEventListener('input', function(){ self.state.text=self.$text.value; self._save(); self._updateCount(); self._autoresize(); });
+        this.$rate.addEventListener('input', function(){ self.state.rate=parseFloat(self.$rate.value)||1; setTxt(self.$rateVal, self.state.rate.toFixed(2)+'×'); self._save(); });
+        var selftestBtn = document.getElementById('selftest');
+        if(selftestBtn) selftestBtn.addEventListener('click', function(){ self.runSelfTest(); });
+      };
 
-      _bind(){
-        this.$voice.addEventListener('change', ()=>{ this.state.voiceId = this.$voice.value; this._save(); this._updateModelInfo(); });
-        this.$preload.addEventListener('click', ()=> this.preloadSelected());
-        this.$preview.addEventListener('click', ()=> this.handlePreview());
-        this.$download.addEventListener('click', ()=> this.handleDownload());
-        this.$text.addEventListener('input', ()=>{ this.state.text=this.$text.value; this._save(); this._updateCount(); this._autoresize(); });
-        this.$rate.addEventListener('input', ()=>{ this.state.rate=parseFloat(this.$rate.value)||1; setTxt(this.$rateVal, this.state.rate.toFixed(2)+'×'); this._save(); });
-        const selftestBtn = document.getElementById('selftest');
-        if(selftestBtn) selftestBtn.addEventListener('click', ()=> this.runSelfTest());
-      }
-
-      async _onReady(){
+      TTSWidget.prototype._onReady = async function(){
         this._load();
-        await this.ensureMeSpeak();
-        this._populateVoices();
+        // peupler la liste (une voix garantie)
+        this.$voice.innerHTML='';
+        var opt=document.createElement('option'); opt.value=ONLY_VOICE.id; opt.textContent=ONLY_VOICE.label; this.$voice.appendChild(opt);
+        this.$voice.value = this.state.voiceId || ONLY_VOICE.id;
+        this.state.voiceId = this.$voice.value; this._save();
         setTxt(this.$rateVal, (this.state.rate||1).toFixed(2)+'×');
         if(this.state.text) this.$text.value = this.state.text;
         this._autoresize(); this._updateCount(); this._updateModelInfo();
-        this.$download.disabled = false; // téléchargement possible via meSpeak même sans Piper
-        if(!this._piper){ this._setStatus('Piper indisponible ici → fallback meSpeak actif'); }
-      }
 
-      // ------- Loaders -------
-      async ensureMeSpeak(){
+        // charger la voix FR meSpeak
+        await this.ensureMeSpeak();
+        if(this._meReady){ this._setStatus('Prêt'); }
+      };
+
+      // ------- meSpeak loader -------
+      TTSWidget.prototype.ensureMeSpeak = async function(){
         if(this._meReady) return true;
         try{
-          await new Promise((resolve, reject)=>{
-            // le core inclut une config par défaut depuis meSpeak 2.0 ; on charge juste la voix FR
-            window.meSpeak.loadVoice('https://cdn.jsdelivr.net/npm/mespeak/voices/fr.json', (ok)=> ok? resolve(): reject(new Error('voice load')));
+          await new Promise(function(resolve, reject){
+            window.meSpeak.loadVoice('https://cdn.jsdelivr.net/npm/mespeak/voices/fr.json', function(ok){ ok? resolve(): reject(new Error('voice load')); });
           });
           this._meReady = true; return true;
-        }catch(e){ this.diag('❌ meSpeak voice FR: '+(e&&e.message?e.message:e)); return false; }
-      }
-
-      _populateVoices(){
-        this.$voice.innerHTML='';
-        if(this._piper){ for(const v of PIPER_FR){ const opt=document.createElement('option'); opt.value=v.id; opt.textContent=v.label; this.$voice.appendChild(opt); } }
-        // Toujours ajouter le fallback meSpeak (téléchargeable partout)
-        const optMe = document.createElement('option'); optMe.value = MESPEAK_VOICE.id; optMe.textContent = MESPEAK_VOICE.label; this.$voice.appendChild(optMe);
-        // Sélection
-        const allowed = [...(this._piper?PIPER_FR.map(v=>v.id):[]), MESPEAK_VOICE.id];
-        this.$voice.value = (this.state.voiceId && allowed.includes(this.state.voiceId)) ? this.state.voiceId : (this._piper?PIPER_FR[0].id:MESPEAK_VOICE.id);
-        this.state.voiceId = this.$voice.value; this._save();
-      }
+        }catch(e){ this.diag('❌ meSpeak voice FR: '+(e&&e.message?e.message:e)); this._setStatus('Voix FR indisponible.'); return false; }
+      };
 
       // ------- UI helpers -------
-      _updateCount(){ const n=(this.$text.value||'').length; setTxt(this.$count, n+(n>1?' caractères':' caractère')); }
-      _autoresize(){ const el=this.$text; el.style.height='auto'; const max=420; el.style.height=Math.min(el.scrollHeight+2, max)+'px'; }
-      _setStatus(s){ setTxt(this.$status,s); }
-      _updateModelInfo(){ const id=this.$voice.value; setTxt(this.$modelInfo, id?('Source: '+(id.startsWith('me:')?'meSpeak (WAV local)':'Piper (neural)')):''); }
-      diag(line){ const d=document.getElementById('diag'); if(d){ d.insertAdjacentHTML('beforeend','<div>'+line+'</div>'); } }
+      TTSWidget.prototype._updateCount = function(){ var n=(this.$text.value||'').length; setTxt(this.$count, n+(n>1?' caractères':' caractère')); };
+      TTSWidget.prototype._autoresize = function(){ var el=this.$text; el.style.height='auto'; var max=420; el.style.height=Math.min(el.scrollHeight+2, max)+'px'; };
+      TTSWidget.prototype._setStatus = function(s){ setTxt(this.$status,s); };
+      TTSWidget.prototype._updateModelInfo = function(){ setTxt(this.$modelInfo, 'Source: meSpeak (WAV local)'); };
+      TTSWidget.prototype.diag = function(line){ var d=document.getElementById('diag'); if(d){ d.insertAdjacentHTML('beforeend','<div>'+line+'</div>'); } };
 
-      // ------- Actions -------
-      async preloadSelected(){
-        const id=this.$voice.value;
-        if(id.startsWith('me:')){ this._setStatus('Rien à précharger (meSpeak).'); return; }
-        if(!this._piper){ this._setStatus('Piper indisponible (contexte).'); return; }
-        this.$preload.disabled = true; this.$prog.hidden=false; this.$prog.value=0; setTxt(this.$msg,'Téléchargement du modèle…');
+      // ---- Lecture (pré-écoute) ----
+      TTSWidget.prototype.handlePreview = async function(){
+        var text=(this.$text.value||'').trim() || 'Bonjour, ceci est un test.';
+        if(!await this.ensureMeSpeak()){ this._setStatus('Lecture indisponible.'); return; }
         try{
-          await this._piper.download(id, (prog)=>{ if(prog && prog.total){ const v=Math.round((prog.loaded*100)/prog.total); this.$prog.value=v; setTxt(this.$msg, 'Téléchargement '+v+'% — '+(prog.url.split('/').pop())); } });
-          setTxt(this.$msg, 'Modèle en cache ✅'); this._setStatus('Prêt');
-        }catch(e){
-          setTxt(this.$msg, 'Échec téléchargement : '+(e&&e.message?e.message:e));
-          this.diag('❌ Piper download '+id+': '+(e&&e.message?e.message:e));
-        }finally{ this.$preload.disabled=false; this.$prog.hidden=true; }
-      }
+          this._setStatus('Génération pour écoute…');
+          var wav = await this.meSpeakWav(text);
+          var url = URL.createObjectURL(wav);
+          this.$player.hidden=false; this.$player.src=url; await this.$player.play().catch(function(){});
+          this._setStatus('Lecture');
+        }catch(e){ this.diag('❌ preview: '+(e&&e.message?e.message:e)); this._setStatus('Lecture indisponible.'); }
+      };
 
-      async handlePreview(){
-        const text=(this.$text.value||'').trim() || 'Bonjour, ceci est un test.';
-        const id=this.$voice.value;
-        // 1) Piper si dispo ET si une voix Piper est choisie
-        if(this._piper && !id.startsWith('me:')){
-          try{
-            this._setStatus('Génération (Piper)…');
-            const wav = await this._piper.predict({ text, voiceId: id });
-            const url = URL.createObjectURL(wav);
-            this.$player.hidden=false; this.$player.src=url; await this.$player.play().catch(()=>{});
-            this._setStatus('Lecture (Piper)'); return;
-          }catch(e){
-            this.diag('❌ preview/predict (Piper): '+(e&&e.message?e.message:e));
-            this._setStatus('Piper en erreur, bascule meSpeak…');
-          }
-        }
-        // 2) meSpeak (garanti)
-        if(await this.ensureMeSpeak()){
-          try{
-            const wavBlob = await this.meSpeakWav(text);
-            const url = URL.createObjectURL(wavBlob);
-            this.$player.hidden=false; this.$player.src=url; await this.$player.play().catch(()=>{});
-            this._setStatus('Lecture (meSpeak)'); return;
-          }catch(e){ this.diag('❌ meSpeak preview: '+(e&&e.message?e.message:e)); this._setStatus('Lecture indisponible.'); }
-        } else { this._setStatus('Lecture indisponible.'); }
-      }
+      // ---- Télécharger WAV ----
+      TTSWidget.prototype.handleDownload = async function(){
+        var text=(this.$text.value||'').trim(); if(!text){ this._setStatus('Ajoute du texte.'); this.$text.focus(); return; }
+        if(!await this.ensureMeSpeak()){ this._setStatus('Génération impossible.'); return; }
+        this.$download.disabled=true; this._setStatus('Génération…');
+        try{
+          var wav = await this.meSpeakWav(text);
+          // vitesse (re-sampling simple)
+          var rate=parseFloat(this.$rate.value)||1; if(Math.abs(rate-1)>0.01){ try{ wav = await this.timeStretchWav(wav, rate); }catch(e){ this.diag('⚠️ timeStretch: '+(e&&e.message?e.message:e)); } }
+          this.downloadBlob(wav, 'tts-'+this.timestamp()+'.wav'); this._setStatus('WAV téléchargé ✅');
+        }catch(e){ this._setStatus('Génération impossible.'); this.diag('❌ download: '+(e&&e.message?e.message:e)); }
+        finally{ this.$download.disabled=false; }
+      };
 
-      async handleDownload(){
-        const text=(this.$text.value||'').trim(); if(!text){ this._setStatus('Ajoute du texte.'); this.$text.focus(); return; }
-        const id=this.$voice.value;
-        let blob=null;
-        if(this._piper && !id.startsWith('me:')){
-          try{
-            this._setStatus('Génération (Piper)…');
-            blob = await this._piper.predict({ text, voiceId: id });
-          }catch(e){ this.diag('❌ predict (Piper): '+(e&&e.message?e.message:e)); this._setStatus('Piper en erreur, bascule meSpeak…'); }
-        }
-        if(!blob){
-          try{ blob = await this.meSpeakWav(text); }
-          catch(e){ this._setStatus('Génération impossible.'); this.diag('❌ meSpeak gen: '+(e&&e.message?e.message:e)); return; }
-        }
-        // Vitesse (re-échantillonnage simple)
-        const rate=parseFloat(this.$rate.value)||1; if(Math.abs(rate-1)>0.01){ try{ blob = await this.timeStretchWav(blob, rate); }catch(e){ this.diag('⚠️ timeStretch: '+(e&&e.message?e.message:e)); } }
-        this.downloadBlob(blob, `tts-${this.timestamp()}.wav`);
-        this._setStatus('WAV téléchargé ✅');
-      }
-
-      // ------- meSpeak helper → WAV Blob -------
-      async meSpeakWav(text){
+      // ---- meSpeak → WAV Blob ----
+      TTSWidget.prototype.meSpeakWav = async function(text){
         await this.ensureMeSpeak();
-        return await new Promise((resolve, reject)=>{
+        return await new Promise(function(resolve, reject){
           try{
-            window.meSpeak.speak(text, { rawdata: true, voice: 'fr', speed: 170, pitch: 55, amplitude: 100 }, (ok, id, stream)=>{
+            window.meSpeak.speak(text, { rawdata: true, voice: 'fr', speed: 170, pitch: 55, amplitude: 100 }, function(ok, id, stream){
               if(ok && stream){ resolve(new Blob([stream], {type:'audio/wav'})); }
               else reject(new Error('meSpeak stream vide'));
             });
           }catch(e){ reject(e); }
         });
-      }
+      };
 
-      // ------- Audio helpers -------
-      async decodeWavToAudioBuffer(blob){ const ac = new (window.AudioContext||window.webkitAudioContext)(); const ab = await blob.arrayBuffer(); const buf = await ac.decodeAudioData(ab); return { ac, buf }; }
-      async timeStretchWav(wavBlob, rate){ const { ac, buf } = await this.decodeWavToAudioBuffer(wavBlob); const duration = buf.duration / rate; const off = new OfflineAudioContext({ numberOfChannels: buf.numberOfChannels, length: Math.ceil(duration*ac.sampleRate), sampleRate: ac.sampleRate }); const src = new AudioBufferSourceNode(off, { buffer: buf, playbackRate: rate }); src.connect(off.destination); src.start(); const rendered = await off.startRendering(); return this.encodeWav(rendered); }
-      encodeWav(audioBuffer){ const numCh=audioBuffer.numberOfChannels, sr=audioBuffer.sampleRate; const chans=[]; for(let c=0;c<numCh;c++) chans.push(audioBuffer.getChannelData(c)); const frames=audioBuffer.length; const inter=new Float32Array(frames*numCh); for(let i=0;i<frames;i++){ for(let c=0;c<numCh;c++){ inter[i*numCh+c]=chans[c][i]; } } const pcm16=new Int16Array(inter.length); for(let i=0;i<inter.length;i++){ let x=Math.max(-1,Math.min(1,inter[i])); pcm16[i]= x<0 ? x*0x8000 : x*0x7FFF; } const byteRate=sr*numCh*2, blockAlign=numCh*2; const buffer=new ArrayBuffer(44+pcm16.byteLength); const view=new DataView(buffer); let p=0; const wstr=s=>{ for(let i=0;i<s.length;i++) view.setUint8(p++, s.charCodeAt(i)); }; const w16=v=>{ view.setUint16(p,v,true); p+=2; }; const w32=v=>{ view.setUint32(p,v,true); p+=4; }; wstr('RIFF'); w32(36+pcm16.byteLength); wstr('WAVE'); wstr('fmt '); w32(16); w16(1); w16(numCh); w32(sr); w32(byteRate); w16(blockAlign); w16(16); wstr('data'); w32(pcm16.byteLength); new Uint8Array(buffer,44).set(new Uint8Array(pcm16.buffer)); return new Blob([buffer],{type:'audio/wav'}); }
-      timestamp(){ const d=new Date(); const pad=n=>String(n).padStart(2,'0'); return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`; }
-      downloadBlob(blob, filename){ const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename; document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 1000); }
+      // ---- Audio helpers ----
+      TTSWidget.prototype.decodeWavToAudioBuffer = async function(blob){ var ac = new (window.AudioContext||window.webkitAudioContext)(); var ab = await blob.arrayBuffer(); var buf = await ac.decodeAudioData(ab); return { ac, buf }; };
+      TTSWidget.prototype.timeStretchWav = async function(wavBlob, rate){ var d = await this.decodeWavToAudioBuffer(wavBlob); var ac=d.ac, buf=d.buf; var duration = buf.duration / rate; var off = new OfflineAudioContext({ numberOfChannels: buf.numberOfChannels, length: Math.ceil(duration*ac.sampleRate), sampleRate: ac.sampleRate }); var src = new AudioBufferSourceNode(off, { buffer: buf, playbackRate: rate }); src.connect(off.destination); src.start(); var rendered = await off.startRendering(); return this.encodeWav(rendered); };
+      TTSWidget.prototype.encodeWav = function(audioBuffer){ var numCh=audioBuffer.numberOfChannels, sr=audioBuffer.sampleRate; var chans=[], i,c; for(c=0;c<numCh;c++) chans.push(audioBuffer.getChannelData(c)); var frames=audioBuffer.length; var interleaved=new Float32Array(frames*numCh); for(i=0;i<frames;i++){ for(c=0;c<numCh;c++){ interleaved[i*numCh+c]=chans[c][i]; } } var pcm16=new Int16Array(interleaved.length); for(i=0;i<interleaved.length;i++){ var x=Math.max(-1,Math.min(1,interleaved[i])); pcm16[i]= x<0 ? x*0x8000 : x*0x7FFF; } var byteRate=sr*numCh*2, blockAlign=numCh*2; var buffer=new ArrayBuffer(44+pcm16.byteLength); var view=new DataView(buffer); var p=0; function wstr(s){ for(var j=0;j<s.length;j++) view.setUint8(p++, s.charCodeAt(j)); } function w16(v){ view.setUint16(p,v,true); p+=2; } function w32(v){ view.setUint32(p,v,true); p+=4; } wstr('RIFF'); w32(36+pcm16.byteLength); wstr('WAVE'); wstr('fmt '); w32(16); w16(1); w16(numCh); w32(sr); w32(byteRate); w16(blockAlign); w16(16); wstr('data'); w32(pcm16.byteLength); new Uint8Array(buffer,44).set(new Uint8Array(pcm16.buffer)); return new Blob([buffer],{type:'audio/wav'}); };
+      TTSWidget.prototype.timestamp = function(){ var d=new Date(); function pad(n){ n=String(n); return n.length===1?('0'+n):n; } return d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate())+'-'+pad(d.getHours())+pad(d.getMinutes())+pad(d.getSeconds()); };
+      TTSWidget.prototype.downloadBlob = function(blob, filename){ var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename; document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 1000); };
 
-      // ------- Diagnostic + tests -------
-      async runSelfTest(){
-        const out=[]; out.push('Navigator.isSecureContext='+(window.isSecureContext?'✅':'⚠️'));
-        out.push('Piper chargé (ESM): '+(this._piper?'✅':'❌'));
-        out.push('meSpeak prêt: '+(this._meReady?'✅':'❌'));
-        out.push('Voix listées: '+ Array.from(this.$voice.options).map(o=>o.textContent).join(' | '));
-        // Test meSpeak
-        try{ const wav=await this.meSpeakWav('Bonjour test.'); out.push('meSpeak WAV: '+wav.size+' octets ✅'); }
+      // ---- Diagnostic ----
+      TTSWidget.prototype.runSelfTest = async function(){
+        var out=[]; out.push('Navigator.isSecureContext='+(window.isSecureContext?'✅':'⚠️'));
+        // test synthèse meSpeak
+        try{ await this.ensureMeSpeak(); var wav=await this.meSpeakWav('Bonjour, ceci est un test.'); out.push('meSpeak WAV: '+wav.size+' octets ✅'); }
         catch(e){ out.push('meSpeak WAV KO: '+(e&&e.message?e.message:e)); }
-        // Test Piper (si dispo)
-        if(this._piper){
-          try{ const wav=await this._piper.predict({ text:'Test Piper.', voiceId: PIPER_FR[0].id }); out.push('Piper WAV: '+wav.size+' octets ✅'); }
-          catch(e){ out.push('Piper KO: '+(e&&e.message?e.message:e)); }
-        }
-        this.diag(out.join('<br>'));
-      }
-    }
+        var d=document.getElementById('diag'); if(d){ d.insertAdjacentHTML('beforeend','<div>'+out.join('<br>')+'</div>'); }
+      };
 
-    customElements.define('tts-widget', TTSWidget);
+      try{ customElements.define('tts-widget', TTSWidget); }catch(e){}
+    })();
   </script>
 </body>
 </html>
